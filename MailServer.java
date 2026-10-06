@@ -4,11 +4,11 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
+import java.io.StringReader;
+import java.io.StringWriter;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.SocketException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -60,7 +60,7 @@ public class MailServer {
     private volatile int port = DEFAULT_PORT;
     private volatile int dashboardPort = DEFAULT_DASHBOARD_PORT;
     private volatile String lastError = "";
-    private ServerSocket serverSocket;
+    private DatagramSocket serverSocket;
     private ExecutorService executorService;
 
     public static void main(String[] args) {
@@ -112,7 +112,7 @@ public class MailServer {
             }
 
             Files.createDirectories(MAIL_ROOT);
-            ServerSocket listeningSocket = new ServerSocket();
+            DatagramSocket listeningSocket = new DatagramSocket(null);
             try {
                 listeningSocket.setReuseAddress(true);
                 listeningSocket.bind(new InetSocketAddress(port));
@@ -126,24 +126,29 @@ public class MailServer {
             serverSocket = listeningSocket;
             executorService = clients;
             lastError = "";
-            log("Mail server listening on all network interfaces, TCP port " + port);
+            log("Mail server listening on all network interfaces, UDP port " + port);
             log("Mail data directory: " + MAIL_ROOT.toAbsolutePath());
-            Thread listener = new Thread(() -> acceptClients(listeningSocket, clients), "mail-server-accept");
+            Thread listener = new Thread(() -> receiveRequests(listeningSocket, clients), "mail-server-udp");
             listener.setDaemon(true);
             listener.start();
         }
     }
 
-    private void acceptClients(ServerSocket listeningSocket, ExecutorService clients) {
+    private void receiveRequests(DatagramSocket listeningSocket, ExecutorService clients) {
         while (!listeningSocket.isClosed()) {
             try {
-                Socket clientSocket = listeningSocket.accept();
-                log("Client connected: " + clientSocket.getInetAddress());
+                byte[] buffer = new byte[65_507];
+                DatagramPacket requestPacket = new DatagramPacket(buffer, buffer.length);
+                listeningSocket.receive(requestPacket);
+                String request = new String(
+                        requestPacket.getData(), requestPacket.getOffset(), requestPacket.getLength(),
+                        StandardCharsets.UTF_8);
+                log("UDP request from " + requestPacket.getAddress());
                 try {
-                    clients.submit(new ClientHandler(clientSocket));
+                    clients.submit(new ClientHandler(listeningSocket, request,
+                            requestPacket.getAddress(), requestPacket.getPort()));
                 } catch (RejectedExecutionException e) {
-                    clientSocket.close();
-                    log("Rejected client connection because the server is stopping.");
+                    log("Rejected UDP request because the server is stopping.");
                 }
             } catch (SocketException e) {
                 if (!listeningSocket.isClosed()) {
@@ -157,15 +162,15 @@ public class MailServer {
         }
     }
 
-    private void handleAcceptFailure(ServerSocket listeningSocket, ExecutorService clients, IOException error) {
+    private void handleAcceptFailure(DatagramSocket listeningSocket, ExecutorService clients, IOException error) {
         synchronized (lifecycleLock) {
             if (serverSocket == listeningSocket) {
                 lastError = error.getMessage();
                 serverSocket = null;
                 executorService = null;
-                listeningSocketClose(listeningSocket);
+                listeningSocket.close();
                 clients.shutdown();
-                log("Mail server stopped after an accept error: " + error.getMessage());
+                log("Mail server stopped after a UDP receive error: " + error.getMessage());
             }
         }
     }
@@ -176,7 +181,7 @@ public class MailServer {
                 return;
             }
 
-            ServerSocket listeningSocket = serverSocket;
+            DatagramSocket listeningSocket = serverSocket;
             ExecutorService clients = executorService;
             listeningSocket.close();
             serverSocket = null;
@@ -203,7 +208,7 @@ public class MailServer {
                 stopMailServer();
             }
             port = newPort;
-            log("Configured mail TCP port to " + newPort + ".");
+            log("Configured mail UDP port to " + newPort + ".");
             if (wasRunning) {
                 startMailServer();
             }
@@ -382,14 +387,6 @@ public class MailServer {
         exchange.getResponseBody().write(body);
     }
 
-    private static void listeningSocketClose(ServerSocket socket) {
-        try {
-            socket.close();
-        } catch (IOException e) {
-            log("Could not close mail server socket: " + e.getMessage());
-        }
-    }
-
     private static void log(String message) {
         String entry = LocalDateTime.now().format(LOG_TIMESTAMP) + "  " + message;
         synchronized (LOGS) {
@@ -402,18 +399,24 @@ public class MailServer {
     }
 
     private static class ClientHandler implements Runnable {
-        private final Socket socket;
+        private final DatagramSocket socket;
+        private final String request;
+        private final java.net.InetAddress clientAddress;
+        private final int clientPort;
 
-        public ClientHandler(Socket socket) {
+        public ClientHandler(DatagramSocket socket, String request,
+                java.net.InetAddress clientAddress, int clientPort) {
             this.socket = socket;
+            this.request = request;
+            this.clientAddress = clientAddress;
+            this.clientPort = clientPort;
         }
 
         @Override
         public void run() {
-            try (BufferedReader input = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-                 BufferedWriter output = new BufferedWriter(
-                         new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))) {
+            StringWriter responseBuffer = new StringWriter();
+            try (BufferedReader input = new BufferedReader(new StringReader(request));
+                 BufferedWriter output = new BufferedWriter(responseBuffer)) {
 
                 String command = input.readLine();
                 if (command == null) {
@@ -433,6 +436,9 @@ public class MailServer {
                 }
 
                 switch (command.trim().toUpperCase()) {
+                    case "PING":
+                        sendResponse(output, "PONG");
+                        break;
                     case "CREATE_ACCOUNT":
                         handleCreateAccount(parameters, output);
                         break;
@@ -455,13 +461,14 @@ public class MailServer {
                         sendResponse(output, "INVALID_COMMAND");
                         break;
                 }
-            } catch (IOException e) {
-                log("Client disconnected: " + socket.getInetAddress());
-            } finally {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {
+
+                byte[] response = responseBuffer.toString().getBytes(StandardCharsets.UTF_8);
+                if (response.length > 65_507) {
+                    response = "RESPONSE_TOO_LARGE\nEND\n".getBytes(StandardCharsets.UTF_8);
                 }
+                socket.send(new DatagramPacket(response, response.length, clientAddress, clientPort));
+            } catch (IOException e) {
+                log("Could not process UDP request from " + clientAddress + ": " + e.getMessage());
             }
         }
     }

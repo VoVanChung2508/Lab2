@@ -6,7 +6,7 @@
 
 - JDK được cài trên máy chủ và các máy khách.
 - Các máy nằm trong cùng mạng LAN và có thể kết nối với nhau.
-- Cho phép kết nối TCP đến cổng `3456` trên máy chủ.
+- Cho phép gói UDP đến cổng `3456` trên máy chủ.
 
 ## Biên dịch
 
@@ -26,7 +26,7 @@ Chỉ chọn một máy làm máy chủ. Trên máy đó, chạy:
 java MailServer
 ```
 
-MailServer tự khởi động dịch vụ mail trên cổng TCP `3456` và mở dashboard quản trị tại:
+MailServer tự khởi động dịch vụ mail trên cổng UDP `3456` và mở dashboard quản trị tại:
 
 ```text
 http://127.0.0.1:8080
@@ -36,7 +36,7 @@ Nếu cổng `8080` đang được sử dụng, MailServer sẽ thử các cổn
 
 Có thể truyền cổng mail khác khi khởi động bằng `java MailServer 3457`; nếu bỏ tham số, cổng mặc định là `3456`.
 
-Dashboard cho phép xem trạng thái, khởi động/dừng/khởi động lại dịch vụ mail, đổi cổng TCP và xem nhật ký hoạt động gần đây. Dừng dịch vụ mail không tắt dashboard, nên có thể khởi động lại từ trình duyệt. Đổi cổng sẽ khởi động lại dịch vụ nếu dịch vụ đang chạy; sau đó cập nhật cổng tương ứng trên MailClient và quy tắc tường lửa nếu có. Cổng được đổi chỉ có hiệu lực trong lần chạy MailServer hiện tại; khởi động chương trình lần sau sẽ dùng lại mặc định `3456`. Nhật ký hiển thị trong dashboard cũng chỉ lưu trong bộ nhớ của lần chạy hiện tại.
+Dashboard cho phép xem trạng thái, khởi động/dừng/khởi động lại dịch vụ mail, đổi cổng UDP và xem nhật ký hoạt động gần đây. Dừng dịch vụ mail không tắt dashboard, nên có thể khởi động lại từ trình duyệt. Đổi cổng sẽ khởi động lại dịch vụ nếu dịch vụ đang chạy; sau đó cập nhật cổng tương ứng trên MailClient và quy tắc tường lửa nếu có. Cổng được đổi chỉ có hiệu lực trong lần chạy MailServer hiện tại; khởi động chương trình lần sau sẽ dùng lại mặc định `3456`. Nhật ký hiển thị trong dashboard cũng chỉ lưu trong bộ nhớ của lần chạy hiện tại.
 
 Dữ liệu tài khoản và thư vẫn nằm trong `mail_data` tính từ thư mục chạy lệnh.
 
@@ -46,10 +46,10 @@ Chạy `ipconfig`, tìm địa chỉ IPv4 của bộ điều hợp đang kết n
 
 ### Tường lửa Windows
 
-Nếu máy khách không kết nối được, Cho phép Java hoặc mở cổng TCP mail hiện tại trên máy chủ trong cấu hình Windows Defender Firewall. Chỉ mở cho mạng riêng/LAN đáng tin cậy; không mở cổng quản trị `8080` ra LAN. Với cổng mặc định, có thể tạo quy tắc bằng PowerShell chạy với quyền quản trị:
+Nếu máy khách không kết nối được, cho phép Java hoặc mở cổng UDP mail hiện tại trên máy chủ trong cấu hình Windows Defender Firewall. Chỉ mở cho mạng riêng/LAN đáng tin cậy; không mở cổng quản trị `8080` ra LAN. Với cổng mặc định, có thể tạo quy tắc bằng PowerShell chạy với quyền quản trị:
 
 ```powershell
-New-NetFirewallRule -DisplayName "MailServer TCP 3456" -Direction Inbound -Protocol TCP -LocalPort 3456 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "MailServer UDP 3456" -Direction Inbound -Protocol UDP -LocalPort 3456 -Action Allow -Profile Private
 ```
 
 ## Chạy máy khách
@@ -64,7 +64,7 @@ Trong giao diện:
 
 1. Nhập IP LAN của máy chủ và cổng `3456` ở thanh phía trên.
 2. Chọn **Kiểm tra kết nối** để xác nhận máy khách truy cập được máy chủ.
-3. Ở mục **Tài khoản**, nhập tên tài khoản và mật khẩu. Mật khẩu phải dài từ 8 đến 128 ký tự.
+3. Ở mục **Tài khoản**, nhập tên tài khoản và mật khẩu. Mật khẩu được hiển thị khi nhập, dài từ 8 đến 128 ký tự.
 4. Chọn **Đăng ký** để tạo tài khoản hoặc **Đăng nhập** để vào hộp thư. Tài khoản đăng nhập sai tên hoặc mật khẩu sẽ nhận cùng một thông báo chung.
 5. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ.
 
@@ -74,4 +74,4 @@ Tài khoản cũ được tạo trước khi thêm mật khẩu vẫn giữ nguy
 
 ## Giới hạn bảo mật
 
-Mật khẩu được lưu trên máy chủ dưới dạng PBKDF2-HMAC-SHA256 với salt ngẫu nhiên; mật khẩu rõ không được ghi vào tệp tài khoản. Tuy nhiên, giao thức TCP hiện không mã hóa mật khẩu, token phiên hoặc nội dung thư khi truyền qua mạng. Đây là ứng dụng học tập: chỉ sử dụng trên mạng LAN riêng đáng tin cậy; không đưa máy chủ lên Internet hoặc dùng để trao đổi thông tin nhạy cảm.
+Mật khẩu được lưu trên máy chủ dưới dạng PBKDF2-HMAC-SHA256 với salt ngẫu nhiên; mật khẩu rõ không được ghi vào tệp tài khoản. Giao thức UDP không đảm bảo gói tin đến nơi hoặc đúng thứ tự và không mã hóa mật khẩu, token phiên hay nội dung thư khi truyền qua mạng; mỗi yêu cầu phải vừa trong một gói UDP. Đây là ứng dụng học tập: chỉ sử dụng trên mạng LAN riêng đáng tin cậy; không đưa máy chủ lên Internet hoặc dùng để trao đổi thông tin nhạy cảm.
