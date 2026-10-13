@@ -79,6 +79,9 @@ public class MailClientGUI extends JFrame {
     private final JTextField hostField = new JTextField("127.0.0.1", 16);
     private final JTextField portField = new JTextField("3456", 5);
     private final JLabel connectionStatus = new JLabel("●  Chưa kiểm tra");
+    private final JLabel broadcastStatus = new JLabel("Chưa tìm máy chủ");
+    private final JLabel multicastStatus = new JLabel("Chưa đăng nhập");
+    private final JLabel multicastGuideStatus = new JLabel("Chưa đăng nhập");
 
     private final JTextField usernameField = new JTextField(22);
     private final JPasswordField passwordField = new JPasswordField(22);
@@ -199,9 +202,11 @@ public class MailClientGUI extends JFrame {
 
         JPanel serverActions = new JPanel(new GridLayout(1, 2, 8, 0));
         serverActions.setOpaque(false);
-        JButton discoverButton = secondaryHeaderButton("Tìm máy chủ");
+        JButton discoverButton = secondaryHeaderButton("Tìm qua Broadcast");
+        discoverButton.setToolTipText("Phát gói broadcast để tìm MailServer trong mạng LAN.");
         discoverButton.addActionListener(event -> discoverServer());
-        JButton checkButton = secondaryHeaderButton("Kiểm tra");
+        JButton checkButton = secondaryHeaderButton("Kiểm tra UDP");
+        checkButton.setToolTipText("Gửi gói PING UDP tới IP và cổng đang nhập.");
         checkButton.addActionListener(event -> checkConnection());
         serverActions.add(discoverButton);
         serverActions.add(checkButton);
@@ -346,11 +351,7 @@ public class MailClientGUI extends JFrame {
 
         page.add(card);
         page.add(Box.createVerticalStrut(14));
-        page.add(infoBox(
-                "Mẹo",
-                "Nếu MailServer chạy trên chính máy này, dùng IP 127.0.0.1 và cổng 3456. "
-                        + "Nếu chạy qua LAN, nhập IPv4 của máy chủ."
-        ));
+        page.add(networkGuideCard());
 
         return page;
     }
@@ -361,12 +362,21 @@ public class MailClientGUI extends JFrame {
         JPanel titleRow = new JPanel(new BorderLayout());
         titleRow.setOpaque(false);
         titleRow.setAlignmentX(LEFT_ALIGNMENT);
-        titleRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
+        titleRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 90));
 
-        titleRow.add(heading(
+        JPanel inboxHeading = new JPanel();
+        inboxHeading.setOpaque(false);
+        inboxHeading.setLayout(new BoxLayout(inboxHeading, BoxLayout.Y_AXIS));
+        inboxHeading.add(heading(
                 "Hộp thư",
                 "Chọn một thư ở danh sách bên trái để xem toàn bộ nội dung."
-        ), BorderLayout.CENTER);
+        ));
+        multicastStatus.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        multicastStatus.setForeground(MUTED);
+        multicastStatus.setBorder(new EmptyBorder(7, 2, 0, 0));
+        multicastStatus.setAlignmentX(LEFT_ALIGNMENT);
+        inboxHeading.add(multicastStatus);
+        titleRow.add(inboxHeading, BorderLayout.CENTER);
 
         JButton refreshButton = secondaryButton("Làm mới");
         refreshButton.addActionListener(event -> refreshInbox());
@@ -527,6 +537,65 @@ public class MailClientGUI extends JFrame {
         box.add(titleLabel);
         box.add(textLabel);
         return box;
+    }
+
+    private JPanel networkGuideCard() {
+        JPanel card = new RoundedPanel(18, SURFACE);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setAlignmentX(LEFT_ALIGNMENT);
+        card.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(BORDER),
+                new EmptyBorder(16, 18, 16, 18)));
+        card.setMaximumSize(new Dimension(720, 190));
+
+        JLabel title = sectionTitle("Khám phá mạng LAN");
+        card.add(title);
+        card.add(Box.createVerticalStrut(12));
+        card.add(networkStep(
+                "1",
+                "BROADCAST · Tìm máy chủ",
+                "Phát yêu cầu trên LAN; máy chủ phản hồi để điền IP và cổng.",
+                broadcastStatus));
+        card.add(Box.createVerticalStrut(10));
+        card.add(networkStep(
+                "2",
+                "MULTICAST · Báo thư mới",
+                "Khi đăng nhập, ứng dụng nghe nhóm 239.255.42.99:3457 và tự làm mới hộp thư.",
+                multicastGuideStatus));
+        return card;
+    }
+
+    private JPanel networkStep(String number, String title, String detail, JLabel status) {
+        JPanel row = new JPanel(new BorderLayout(12, 0));
+        row.setOpaque(false);
+        row.setAlignmentX(LEFT_ALIGNMENT);
+
+        JLabel badge = new JLabel(number, SwingConstants.CENTER);
+        badge.setOpaque(true);
+        badge.setBackground(ACCENT_SOFT);
+        badge.setForeground(ACCENT_HOVER);
+        badge.setFont(new Font("Segoe UI", Font.BOLD, 13));
+        badge.setPreferredSize(new Dimension(30, 30));
+
+        JPanel text = new JPanel();
+        text.setOpaque(false);
+        text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        titleLabel.setForeground(TEXT);
+        JLabel detailLabel = new JLabel("<html><div style='width:380px'>" + detail + "</div></html>");
+        detailLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        detailLabel.setForeground(MUTED);
+        text.add(titleLabel);
+        text.add(Box.createVerticalStrut(3));
+        text.add(detailLabel);
+
+        status.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        status.setForeground(MUTED);
+        row.add(badge, BorderLayout.WEST);
+        row.add(text, BorderLayout.CENTER);
+        row.add(status, BorderLayout.EAST);
+        return row;
     }
 
     private void addLabeledField(JPanel parent, String labelText, JComponent field) {
@@ -810,7 +879,7 @@ public class MailClientGUI extends JFrame {
             return;
         }
 
-        setConnectionStatus("Đang tìm máy chủ trong LAN...", WARNING);
+        setBroadcastStatus("Đang dò mạng LAN...", WARNING);
         new SwingWorker<List<InetSocketAddress>, Void>() {
             @Override
             protected List<InetSocketAddress> doInBackground() throws IOException {
@@ -822,12 +891,13 @@ public class MailClientGUI extends JFrame {
                 try {
                     List<InetSocketAddress> servers = get();
                     if (servers.isEmpty()) {
-                        setConnectionStatus("Không tìm thấy máy chủ", new Color(255, 180, 180));
+                        setBroadcastStatus("Không tìm thấy", DANGER);
                         showError("Không tìm thấy MailServer qua broadcast. Hãy kiểm tra cùng mạng LAN, "
                                 + "tường lửa UDP và thử nhập IP máy chủ thủ công.");
                         return;
                     }
 
+                    setBroadcastStatus("Tìm thấy " + servers.size() + " máy chủ", SUCCESS);
                     String[] choices = servers.stream()
                             .map(address -> address.getAddress().getHostAddress() + ":" + address.getPort())
                             .toArray(String[]::new);
@@ -853,13 +923,13 @@ public class MailClientGUI extends JFrame {
                     InetSocketAddress address = servers.get(selectedIndex);
                     hostField.setText(address.getAddress().getHostAddress());
                     portField.setText(Integer.toString(address.getPort()));
-                    setConnectionStatus("Đã tìm thấy " + choices[selectedIndex], SUCCESS);
+                    setBroadcastStatus("Đã chọn " + choices[selectedIndex], SUCCESS);
                 } catch (InterruptedException exception) {
                     Thread.currentThread().interrupt();
-                    setConnectionStatus("Tìm kiếm bị gián đoạn", new Color(255, 180, 180));
+                    setBroadcastStatus("Tìm kiếm bị gián đoạn", DANGER);
                     showError("Tìm máy chủ bị gián đoạn.");
                 } catch (ExecutionException exception) {
-                    setConnectionStatus("Không tìm được máy chủ", new Color(255, 180, 180));
+                    setBroadcastStatus("Lỗi broadcast", DANGER);
                     showError("Không thể tìm máy chủ: " + rootMessage(exception));
                 }
             }
@@ -868,15 +938,23 @@ public class MailClientGUI extends JFrame {
 
     private void startNotificationListener(String username) {
         stopNotificationListener();
+        setMulticastStatus("Multicast: đang tham gia nhóm...", "Đang tham gia nhóm...", WARNING);
         try {
             MulticastSocket socket = MailClient.openNotificationSocket();
             notificationSocket = socket;
+            setMulticastStatus(
+                    "Multicast: đang nghe",
+                    "Đang nghe nhóm thông báo",
+                    SUCCESS);
+            multicastStatus.setToolTipText(
+                    "Nhóm " + MailClient.NOTIFICATION_GROUP + ":" + MailClient.NOTIFICATION_PORT);
             Thread listener = new Thread(
                     () -> listenForMailNotifications(socket, username),
                     "mail-client-multicast");
             listener.setDaemon(true);
             listener.start();
         } catch (IOException exception) {
+            setMulticastStatus("Multicast: không thể lắng nghe", "Không thể tham gia nhóm", DANGER);
             showError("Đã đăng nhập nhưng không thể nghe thông báo multicast: " + exception.getMessage());
         }
     }
@@ -891,6 +969,10 @@ public class MailClientGUI extends JFrame {
                         packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8);
                 if (notification.equals("NEW_MAIL:" + username)
                         && username.equals(currentUsername)) {
+                    setMulticastStatus(
+                            "Multicast: có thư mới cho " + username,
+                            "Đã nhận thông báo thư mới",
+                            SUCCESS);
                     SwingUtilities.invokeLater(() -> {
                         if (username.equals(currentUsername)) {
                             refreshInbox();
@@ -916,7 +998,7 @@ public class MailClientGUI extends JFrame {
 
     private void reportNotificationFailure(IOException exception) {
         SwingUtilities.invokeLater(() -> {
-            setConnectionStatus("Thông báo multicast bị gián đoạn", new Color(255, 180, 180));
+            setMulticastStatus("Multicast: bị gián đoạn", "Kết nối multicast bị gián đoạn", DANGER);
             showError("Không thể nhận thông báo multicast: " + exception.getMessage());
         });
     }
@@ -927,6 +1009,19 @@ public class MailClientGUI extends JFrame {
         if (socket != null) {
             socket.close();
         }
+    }
+
+    private void setBroadcastStatus(String message, Color color) {
+        broadcastStatus.setText(message);
+        broadcastStatus.setForeground(color);
+        setConnectionStatus("Broadcast · " + message, color);
+    }
+
+    private void setMulticastStatus(String inboxMessage, String guideMessage, Color color) {
+        multicastStatus.setText(inboxMessage);
+        multicastStatus.setForeground(color);
+        multicastGuideStatus.setText(guideMessage);
+        multicastGuideStatus.setForeground(color);
     }
 
     private int readPort() {
@@ -1195,6 +1290,7 @@ public class MailClientGUI extends JFrame {
 
     private void expireSession() {
         stopNotificationListener();
+        setMulticastStatus("Multicast: chưa đăng nhập", "Chưa đăng nhập", MUTED);
         currentUsername = null;
         sessionToken = null;
 
