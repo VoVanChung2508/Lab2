@@ -79,6 +79,9 @@ Trong giao diện:
 4. Chọn **Đăng ký** để tạo tài khoản hoặc **Đăng nhập** để vào hộp thư. Tài khoản đăng nhập sai tên hoặc mật khẩu sẽ nhận cùng một thông báo chung.
 5. Client đang đăng nhập tham gia nhóm multicast để tự làm mới hộp thư khi có thư mới gửi đến tài khoản đó; khi đăng xuất, client rời nhóm.
 6. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ. Có thể nhập nhiều username, ngăn cách bằng dấu phẩy, hoặc tạo nhóm nhận dùng lại.
+7. Dùng trang **Broadcast LAN** để gửi thông báo tới các Mail Client đang mở trên cùng mạng LAN. Người gửi phải đăng nhập; client nhận không cần đăng nhập. Broadcast chỉ là thông báo trực tiếp, không lưu vào hộp thư.
+
+**Phân biệt:** Broadcast được dùng để tìm server và gửi thông báo tới mọi client đang mở trong LAN. Multicast được dùng để báo có thư mới tới client của người nhận. Broadcast notification dùng UDP cổng `3458`; multicast mail notification dùng nhóm `239.255.42.99`, cổng `3457`.
 
 ### Tạo nhóm người nhận và gửi thư cho nhiều người
 

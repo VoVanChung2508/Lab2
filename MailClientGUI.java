@@ -15,6 +15,7 @@ import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
+import java.net.DatagramSocket;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
@@ -86,6 +87,7 @@ public class MailClientGUI extends JFrame {
     private final JLabel broadcastStatus = new JLabel("Chưa tìm máy chủ");
     private final JLabel multicastStatus = new JLabel("Chưa đăng nhập");
     private final JLabel multicastGuideStatus = new JLabel("Chưa đăng nhập");
+    private final JLabel broadcastNoticeStatus = new JLabel("Đang khởi tạo bộ nhận broadcast...");
 
     private final JTextField usernameField = new JTextField(22);
     private final JPasswordField passwordField = new JPasswordField(22);
@@ -97,6 +99,7 @@ public class MailClientGUI extends JFrame {
     private final List<RecipientGroup> recipientGroups = new ArrayList<>();
     private final JTextField subjectField = new JTextField(28);
     private final JTextArea bodyField = new JTextArea(10, 28);
+    private final JTextField broadcastMessageField = new JTextField(40);
 
     private final JTextArea emailContent = new JTextArea();
     private final DefaultListModel<String> inboxModel = new DefaultListModel<>();
@@ -112,6 +115,7 @@ public class MailClientGUI extends JFrame {
     private volatile String currentUsername;
     private volatile String sessionToken;
     private volatile MulticastSocket notificationSocket;
+    private volatile DatagramSocket broadcastNotificationSocket;
 
     public MailClientGUI() {
         super("Mail Client • LAN");
@@ -127,10 +131,134 @@ public class MailClientGUI extends JFrame {
             @Override
             public void windowClosing(WindowEvent event) {
                 stopNotificationListener();
+                stopBroadcastNotificationListener();
             }
         });
 
         buildInterface();
+        startBroadcastNotificationListener();
+    }
+
+    private void startBroadcastNotificationListener() {
+        try {
+            DatagramSocket socket = MailClient.openBroadcastNotificationSocket();
+            broadcastNotificationSocket = socket;
+            broadcastNoticeStatus.setText(
+                    "Đang nghe broadcast trên cổng " + MailClient.BROADCAST_NOTIFICATION_PORT);
+            broadcastNoticeStatus.setForeground(SUCCESS);
+            Thread listener = new Thread(
+                    () -> listenForBroadcastNotices(socket),
+                    "mail-client-broadcast");
+            listener.setDaemon(true);
+            listener.start();
+        } catch (IOException exception) {
+            broadcastNoticeStatus.setText("Không thể mở bộ nhận broadcast");
+            broadcastNoticeStatus.setForeground(DANGER);
+            showError("Không thể nhận broadcast trên cổng "
+                    + MailClient.BROADCAST_NOTIFICATION_PORT + ": " + exception.getMessage());
+        }
+    }
+
+    private void listenForBroadcastNotices(DatagramSocket socket) {
+        byte[] buffer = new byte[2_048];
+        while (!socket.isClosed()) {
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                socket.receive(packet);
+                String payload = new String(
+                        packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8);
+                String[] fields = payload.split(":", 3);
+                if (fields.length != 3 || !"BROADCAST_NOTICE".equals(fields[0])) {
+                    continue;
+                }
+                String sender = decodeBroadcastField(fields[1]);
+                String message = decodeBroadcastField(fields[2]);
+                if (sender == null || sender.isBlank() || message == null || message.isBlank()
+                        || message.length() > 500) {
+                    continue;
+                }
+                if (sender.equals(currentUsername)) {
+                    continue;
+                }
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                        this,
+                        message,
+                        "Broadcast từ " + sender,
+                        JOptionPane.INFORMATION_MESSAGE));
+            } catch (SocketTimeoutException exception) {
+                continue;
+            } catch (SocketException exception) {
+                if (!socket.isClosed()) {
+                    reportBroadcastNotificationFailure(exception);
+                }
+                break;
+            } catch (IOException exception) {
+                reportBroadcastNotificationFailure(exception);
+                break;
+            }
+        }
+        if (broadcastNotificationSocket == socket) {
+            broadcastNotificationSocket = null;
+        }
+    }
+
+    private String decodeBroadcastField(String encoded) {
+        try {
+            return new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private void reportBroadcastNotificationFailure(IOException exception) {
+        SwingUtilities.invokeLater(() -> {
+            broadcastNoticeStatus.setText("Bộ nhận broadcast bị gián đoạn");
+            broadcastNoticeStatus.setForeground(DANGER);
+            showError("Không thể nhận broadcast: " + exception.getMessage());
+        });
+    }
+
+    private void stopBroadcastNotificationListener() {
+        DatagramSocket socket = broadcastNotificationSocket;
+        broadcastNotificationSocket = null;
+        if (socket != null) {
+            socket.close();
+        }
+    }
+
+    private void sendBroadcastNotice() {
+        if (sessionToken == null) {
+            showError("Đăng nhập trước khi gửi broadcast.");
+            return;
+        }
+        String message = broadcastMessageField.getText().trim();
+        if (message.isEmpty() || message.length() > 500
+                || message.chars().anyMatch(Character::isISOControl)) {
+            showError("Thông báo phải có nội dung từ 1 đến 500 ký tự và không chứa ký tự điều khiển.");
+            return;
+        }
+
+        String encodedMessage = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(message.getBytes(StandardCharsets.UTF_8));
+        request("BROADCAST_NOTICE", Map.of(
+                "token", sessionToken,
+                "message64", encodedMessage), response -> {
+                    String status = response.get(0);
+                    if (status.startsWith("BROADCAST_SENT:")) {
+                        broadcastNoticeStatus.setText("Đã phát broadcast; UDP không xác nhận client đã nhận.");
+                        broadcastNoticeStatus.setForeground(SUCCESS);
+                        JOptionPane.showMessageDialog(this,
+                                "Server đã phát thông báo lên mạng LAN. "
+                                        + "UDP không xác nhận client nào đã nhận được.",
+                                "Broadcast đã gửi",
+                                JOptionPane.INFORMATION_MESSAGE);
+                    } else if ("AUTH_REQUIRED".equals(status)) {
+                        expireSession();
+                        showError("Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.");
+                    } else {
+                        showError("Máy chủ từ chối broadcast: " + status);
+                    }
+                });
     }
 
     // =========================================================
@@ -149,6 +277,7 @@ public class MailClientGUI extends JFrame {
         pages.add(buildAccountPage(), "account");
         pages.add(buildInboxPage(), "inbox");
         pages.add(buildComposePage(), "compose");
+        pages.add(buildBroadcastPage(), "broadcast");
 
         add(pages, BorderLayout.CENTER);
         showPage("account");
@@ -261,6 +390,8 @@ public class MailClientGUI extends JFrame {
         navigation.add(navButton("▣", "Hộp thư", "inbox"));
         navigation.add(Box.createVerticalStrut(5));
         navigation.add(navButton("✎", "Soạn thư", "compose"));
+        navigation.add(Box.createVerticalStrut(5));
+        navigation.add(navButton("◉", "Broadcast LAN", "broadcast"));
 
         navigation.add(Box.createVerticalGlue());
 
@@ -359,6 +490,51 @@ public class MailClientGUI extends JFrame {
         page.add(Box.createVerticalStrut(14));
         page.add(networkGuideCard());
 
+        return page;
+    }
+
+    private JPanel buildBroadcastPage() {
+        JPanel page = pagePanel();
+        page.add(heading(
+                "Broadcast LAN",
+                "Gửi một thông báo UDP tới mọi Mail Client đang mở trong cùng mạng LAN."
+        ));
+        page.add(Box.createVerticalStrut(12));
+
+        JPanel card = cardPanel();
+        card.setMaximumSize(new Dimension(760, 330));
+        card.add(sectionTitle("Thông báo tới tất cả client"));
+        card.add(Box.createVerticalStrut(8));
+
+        JLabel explanation = new JLabel(
+                "<html>Server phát bản tin tới địa chỉ broadcast của các mạng LAN đang kết nối. "
+                        + "Client không cần đăng nhập để nhận; người gửi phải đăng nhập. "
+                        + "Broadcast không lưu thông báo vào hộp thư.</html>");
+        explanation.setForeground(MUTED);
+        explanation.setFont(BODY_FONT);
+        explanation.setAlignmentX(LEFT_ALIGNMENT);
+        card.add(explanation);
+        card.add(Box.createVerticalStrut(18));
+
+        broadcastMessageField.setToolTipText("Thông báo tối đa 500 ký tự.");
+        addLabeledField(card, "Nội dung thông báo", broadcastMessageField);
+        broadcastNoticeStatus.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        broadcastNoticeStatus.setForeground(MUTED);
+        broadcastNoticeStatus.setAlignmentX(LEFT_ALIGNMENT);
+        card.add(broadcastNoticeStatus);
+        card.add(Box.createVerticalStrut(14));
+
+        JPanel actions = new JPanel();
+        actions.setOpaque(false);
+        actions.setLayout(new BoxLayout(actions, BoxLayout.X_AXIS));
+        actions.setAlignmentX(LEFT_ALIGNMENT);
+        JButton sendNoticeButton = primaryButton("Gửi broadcast");
+        sendNoticeButton.addActionListener(event -> sendBroadcastNotice());
+        actions.add(sendNoticeButton);
+        actions.add(Box.createHorizontalGlue());
+        card.add(actions);
+
+        page.add(card);
         return page;
     }
 

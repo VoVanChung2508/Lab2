@@ -10,7 +10,9 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.InetAddress;
+import java.net.InterfaceAddress;
 import java.net.MulticastSocket;
+import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -469,6 +471,9 @@ public class MailServer {
                     case "SEND_GROUP_EMAIL":
                         handleSendGroupEmail(parameters, output);
                         break;
+                    case "BROADCAST_NOTICE":
+                        handleBroadcastNotice(parameters, output);
+                        break;
                     case "LIST_GROUPS":
                         handleListGroups(parameters, output);
                         break;
@@ -857,6 +862,81 @@ public class MailServer {
         } catch (IOException e) {
             log("Could not multicast new-mail notification for " + recipient + ": " + e.getMessage());
         }
+    }
+
+    private static void handleBroadcastNotice(Map<String, String> parameters, BufferedWriter output)
+            throws IOException {
+        String sender = authenticatedUsername(parameters.get("token"));
+        if (sender == null) {
+            sendResponse(output, "AUTH_REQUIRED");
+            return;
+        }
+        String message = decodeGroupValue(parameters.get("message64"));
+        if (message == null || message.trim().isEmpty() || message.length() > 500
+                || message.chars().anyMatch(Character::isISOControl)) {
+            sendResponse(output, "INVALID_BROADCAST_MESSAGE");
+            return;
+        }
+
+        try {
+            int interfacesSent = sendBroadcastNotice(sender, message.trim());
+            sendResponse(output, "BROADCAST_SENT:" + interfacesSent);
+            log("Broadcast notice sent by " + sender + " on " + interfacesSent + " network interface(s).");
+        } catch (IOException exception) {
+            sendResponse(output, "BROADCAST_FAILED");
+            log("Could not send broadcast notice from " + sender + ": " + exception.getMessage());
+        }
+    }
+
+    private static int sendBroadcastNotice(String sender, String message) throws IOException {
+        String payload = "BROADCAST_NOTICE:" + encodeGroupValue(sender) + ":" + encodeGroupValue(message);
+        byte[] notification = payload.getBytes(StandardCharsets.UTF_8);
+        Map<String, InetAddress> broadcastAddresses = new LinkedHashMap<>();
+        java.util.Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+        if (interfaces != null) {
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
+                    continue;
+                }
+                for (InterfaceAddress interfaceAddress : networkInterface.getInterfaceAddresses()) {
+                    InetAddress broadcastAddress = interfaceAddress.getBroadcast();
+                    if (broadcastAddress != null) {
+                        broadcastAddresses.putIfAbsent(broadcastAddress.getHostAddress(), broadcastAddress);
+                    }
+                }
+            }
+        }
+        if (broadcastAddresses.isEmpty()) {
+            InetAddress limitedBroadcast = InetAddress.getByName("255.255.255.255");
+            broadcastAddresses.put(limitedBroadcast.getHostAddress(), limitedBroadcast);
+        }
+
+        int interfacesSent = 0;
+        IOException sendFailure = null;
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.setBroadcast(true);
+            for (InetAddress broadcastAddress : broadcastAddresses.values()) {
+                try {
+                    socket.send(new DatagramPacket(notification, notification.length,
+                            broadcastAddress, MailClient.BROADCAST_NOTIFICATION_PORT));
+                    interfacesSent++;
+                } catch (IOException exception) {
+                    if (sendFailure == null) {
+                        sendFailure = new IOException("Could not send broadcast on every network interface.");
+                    }
+                    sendFailure.addSuppressed(exception);
+                    log("Could not broadcast notice on " + broadcastAddress.getHostAddress()
+                            + ": " + exception.getMessage());
+                }
+            }
+        }
+        if (interfacesSent == 0) {
+            throw sendFailure == null
+                    ? new IOException("No network interface accepted the broadcast notice.")
+                    : sendFailure;
+        }
+        return interfacesSent;
     }
 
     private static void handleReadEmail(Map<String, String> parameters, BufferedWriter output) throws IOException {

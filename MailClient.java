@@ -21,6 +21,7 @@ public class MailClient {
     private static final int DISCOVERY_TIMEOUT_MILLIS = 1_500;
     static final String NOTIFICATION_GROUP = "239.255.42.99";
     static final int NOTIFICATION_PORT = 3457;
+    static final int BROADCAST_NOTIFICATION_PORT = 3458;
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> new MailClientGUI().setVisible(true));
@@ -169,6 +170,19 @@ public class MailClient {
                 }
                 throw new IOException("Không tìm thấy interface mạng hỗ trợ multicast.");
             }
+            return socket;
+        } catch (IOException | RuntimeException e) {
+            socket.close();
+            throw e;
+        }
+    }
+
+    static DatagramSocket openBroadcastNotificationSocket() throws IOException {
+        DatagramSocket socket = new DatagramSocket(null);
+        try {
+            socket.setReuseAddress(true);
+            socket.bind(new InetSocketAddress(BROADCAST_NOTIFICATION_PORT));
+            socket.setSoTimeout(1_000);
             return socket;
         } catch (IOException | RuntimeException e) {
             socket.close();
