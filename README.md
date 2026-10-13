@@ -78,7 +78,17 @@ Trong giao diện:
 3. Ở mục **Tài khoản**, nhập tên tài khoản và mật khẩu. Mật khẩu được hiển thị khi nhập, dài từ 8 đến 128 ký tự.
 4. Chọn **Đăng ký** để tạo tài khoản hoặc **Đăng nhập** để vào hộp thư. Tài khoản đăng nhập sai tên hoặc mật khẩu sẽ nhận cùng một thông báo chung.
 5. Client đang đăng nhập tham gia nhóm multicast để tự làm mới hộp thư khi có thư mới gửi đến tài khoản đó; khi đăng xuất, client rời nhóm.
-6. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ.
+6. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ. Có thể nhập nhiều username, ngăn cách bằng dấu phẩy, hoặc tạo nhóm nhận dùng lại.
+
+### Tạo nhóm người nhận và gửi thư cho nhiều người
+
+1. Đăng nhập, mở **Soạn thư**, rồi chọn **Quản lý nhóm…**.
+2. Chọn **Nhóm mới**, nhập tên nhóm và danh sách username LAN, ngăn cách bằng dấu phẩy; sau đó chọn **Lưu nhóm**. Các username phải là tài khoản đã được tạo trên cùng MailServer.
+3. Danh sách nhóm được lưu riêng trong thư mục tài khoản trên máy chủ. Có thể chọn một nhóm đã có để sửa hoặc xóa; mỗi tài khoản lưu tối đa 20 nhóm, mỗi nhóm tối đa 50 người nhận.
+4. Khi soạn thư, chọn nhóm ở danh sách **Chọn nhóm người nhận**. Thành viên sẽ được điền vào ô Người nhận và có thể chỉnh sửa trước khi gửi. Hoặc nhập trực tiếp nhiều username, ngăn cách bằng dấu phẩy, dấu chấm phẩy hoặc khoảng trắng.
+5. Chọn **Gửi thư**. Server kiểm tra toàn bộ người nhận trước; nếu hợp lệ, lưu một bản thư vào hộp thư của từng người và gửi multicast báo thư mới riêng cho từng tài khoản. Nếu có username không tồn tại, thư không được gửi tới bất kỳ thành viên nào.
+
+Nhóm là danh sách người nhận nội bộ, không phải địa chỉ email Internet. Multicast chỉ giúp client đang đăng nhập làm mới hộp thư; thư vẫn được lưu trên server để người nhận mở sau nếu thông báo UDP bị mất.
 
 Máy khách trong cùng LAN dùng chung dữ liệu trên một MailServer. Nếu đổi cổng máy chủ, cần sửa cổng đang dùng trên giao diện máy khách cho khớp.
 

@@ -24,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -32,9 +33,12 @@ import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.DefaultListModel;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JDialog;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -89,6 +93,8 @@ public class MailClientGUI extends JFrame {
     private final JLabel accountStatus = new JLabel("Chưa đăng nhập");
 
     private final JTextField recipientField = new JTextField(28);
+    private final JComboBox<String> recipientGroupSelector = new JComboBox<>();
+    private final List<RecipientGroup> recipientGroups = new ArrayList<>();
     private final JTextField subjectField = new JTextField(28);
     private final JTextArea bodyField = new JTextArea(10, 28);
 
@@ -446,7 +452,23 @@ public class MailClientGUI extends JFrame {
         card.add(sectionTitle("Thư mới"));
         card.add(Box.createVerticalStrut(4));
 
-        addLabeledField(card, "Người nhận", recipientField);
+        recipientField.setToolTipText("Nhập một hoặc nhiều username LAN, phân cách bằng dấu phẩy.");
+        addLabeledField(card, "Người nhận (username, phân cách bằng dấu phẩy)", recipientField);
+        recipientGroupSelector.addItem("— Chọn nhóm đã lưu —");
+        recipientGroupSelector.addActionListener(event -> {
+            int selectedIndex = recipientGroupSelector.getSelectedIndex() - 1;
+            if (selectedIndex >= 0 && selectedIndex < recipientGroups.size()) {
+                recipientField.setText(recipientGroups.get(selectedIndex).recipients);
+            }
+        });
+        JPanel groupControls = new JPanel(new BorderLayout(8, 0));
+        groupControls.setOpaque(false);
+        groupControls.add(recipientGroupSelector, BorderLayout.CENTER);
+        JButton manageGroupsButton = secondaryButton("Quản lý nhóm…");
+        manageGroupsButton.setPreferredSize(new Dimension(150, 40));
+        manageGroupsButton.addActionListener(event -> manageRecipientGroups());
+        groupControls.add(manageGroupsButton, BorderLayout.EAST);
+        addLabeledField(card, "Chọn nhóm người nhận", groupControls);
         addLabeledField(card, "Tiêu đề", subjectField);
 
         bodyField.setFont(BODY_FONT);
@@ -1132,6 +1154,7 @@ public class MailClientGUI extends JFrame {
                 confirmPasswordField.setText("");
 
                 setInbox(response.subList(2, response.size()));
+                loadRecipientGroups(this::setRecipientGroups);
                 showPage("inbox");
 
             } else if ("LOGIN_FAILED".equals(response.get(0))) {
@@ -1213,35 +1236,295 @@ public class MailClientGUI extends JFrame {
         });
     }
 
+    private void manageRecipientGroups() {
+        if (currentUsername == null) {
+            showError("Đăng nhập trước khi quản lý nhóm người nhận.");
+            return;
+        }
+
+        JDialog dialog = new JDialog(this, "Quản lý nhóm người nhận", false);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.setSize(680, 460);
+        dialog.setLocationRelativeTo(this);
+
+        DefaultListModel<RecipientGroup> model = new DefaultListModel<>();
+        JList<RecipientGroup> groupList = new JList<>(model);
+        groupList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        groupList.setFont(BODY_FONT);
+        groupList.setFixedCellHeight(38);
+        groupList.setBorder(new EmptyBorder(6, 8, 6, 8));
+
+        JTextField nameField = new JTextField();
+        JTextArea membersField = new JTextArea(6, 28);
+        membersField.setFont(BODY_FONT);
+        membersField.setLineWrap(true);
+        membersField.setWrapStyleWord(true);
+        membersField.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        JPanel content = new JPanel(new BorderLayout(14, 0));
+        content.setBorder(new EmptyBorder(18, 18, 12, 18));
+        JLabel guidance = new JLabel(
+                "<html>Nhóm chỉ thuộc tài khoản <b>" + currentUsername
+                        + "</b>. Nhập username LAN, phân cách bằng dấu phẩy.</html>");
+        guidance.setBorder(new EmptyBorder(0, 0, 12, 0));
+        content.add(guidance, BorderLayout.NORTH);
+        JScrollPane groupScroll = new JScrollPane(groupList);
+        groupScroll.setPreferredSize(new Dimension(210, 280));
+        content.add(groupScroll, BorderLayout.WEST);
+
+        JPanel fields = new JPanel();
+        fields.setLayout(new BoxLayout(fields, BoxLayout.Y_AXIS));
+        JLabel groupNameCaption = new JLabel("Tên nhóm");
+        groupNameCaption.setFont(BODY_MEDIUM);
+        fields.add(groupNameCaption);
+        fields.add(Box.createVerticalStrut(6));
+        nameField.setFont(BODY_FONT);
+        fields.add(nameField);
+        fields.add(Box.createVerticalStrut(14));
+        JLabel membersCaption = new JLabel("Thành viên");
+        membersCaption.setFont(BODY_MEDIUM);
+        fields.add(membersCaption);
+        fields.add(Box.createVerticalStrut(6));
+        JScrollPane membersScroll = new JScrollPane(membersField);
+        styleScrollPane(membersScroll);
+        fields.add(membersScroll);
+        content.add(fields, BorderLayout.CENTER);
+
+        JPanel actions = new JPanel(new GridLayout(1, 4, 8, 0));
+        actions.setBorder(new EmptyBorder(0, 18, 16, 18));
+        JButton newGroupButton = secondaryButton("Nhóm mới");
+        JButton saveGroupButton = primaryButton("Lưu nhóm");
+        JButton deleteGroupButton = secondaryButton("Xóa nhóm");
+        JButton closeButton = secondaryButton("Đóng");
+        actions.add(newGroupButton);
+        actions.add(saveGroupButton);
+        actions.add(deleteGroupButton);
+        actions.add(closeButton);
+        dialog.add(content, BorderLayout.CENTER);
+        dialog.add(actions, BorderLayout.SOUTH);
+
+        groupList.addListSelectionListener(event -> {
+            if (!event.getValueIsAdjusting() && groupList.getSelectedValue() != null) {
+                RecipientGroup selected = groupList.getSelectedValue();
+                nameField.setText(selected.name);
+                membersField.setText(selected.recipients);
+            }
+        });
+        newGroupButton.addActionListener(event -> {
+            groupList.clearSelection();
+            nameField.setText("");
+            membersField.setText("");
+            nameField.requestFocusInWindow();
+        });
+        saveGroupButton.addActionListener(event -> saveRecipientGroup(
+                nameField.getText(), membersField.getText(), response -> {
+                    if ("GROUP_SAVED".equals(response.get(0))) {
+                        loadRecipientGroups(groups -> {
+                            replaceGroupList(model, groups);
+                            selectGroupByName(groupList, nameField.getText());
+                        });
+                    } else {
+                        showGroupOperationError(response.get(0));
+                    }
+                }));
+        deleteGroupButton.addActionListener(event -> {
+            String name = nameField.getText().trim();
+            if (name.isEmpty()) {
+                showError("Chọn nhóm cần xóa hoặc nhập tên nhóm.");
+                return;
+            }
+            int choice = JOptionPane.showConfirmDialog(
+                    dialog, "Xóa nhóm \"" + name + "\"?", "Xác nhận xóa nhóm",
+                    JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (choice == JOptionPane.YES_OPTION) {
+                deleteRecipientGroup(name, response -> {
+                    if ("GROUP_DELETED".equals(response.get(0))) {
+                        nameField.setText("");
+                        membersField.setText("");
+                        loadRecipientGroups(groups -> replaceGroupList(model, groups));
+                    } else {
+                        showGroupOperationError(response.get(0));
+                    }
+                });
+            }
+        });
+        closeButton.addActionListener(event -> dialog.dispose());
+        loadRecipientGroups(groups -> replaceGroupList(model, groups));
+        dialog.setVisible(true);
+    }
+
+    private void loadRecipientGroups(Consumer<List<RecipientGroup>> onGroupsLoaded) {
+        if (sessionToken == null) {
+            return;
+        }
+        String requestedSessionToken = sessionToken;
+        request("LIST_GROUPS", Map.of("token", requestedSessionToken), response -> {
+            if (!requestedSessionToken.equals(sessionToken)) {
+                return;
+            }
+            if (!"GROUPS".equals(response.get(0))) {
+                showGroupOperationError(response.get(0));
+                return;
+            }
+            List<RecipientGroup> groups = new ArrayList<>();
+            try {
+                for (int index = 1; index < response.size(); index++) {
+                    String[] fields = response.get(index).split(":", 3);
+                    if (fields.length != 3 || !"GROUP".equals(fields[0])) {
+                        throw new IllegalArgumentException("Định dạng nhóm từ máy chủ không hợp lệ.");
+                    }
+                    String name = decodeGroupValue(fields[1]);
+                    String recipients = decodeGroupValue(fields[2]);
+                    groups.add(new RecipientGroup(name, recipients));
+                }
+            } catch (IllegalArgumentException exception) {
+                showError("Không thể đọc danh sách nhóm: " + exception.getMessage());
+                return;
+            }
+            setRecipientGroups(groups);
+            onGroupsLoaded.accept(groups);
+        });
+    }
+
+    private void setRecipientGroups(List<RecipientGroup> groups) {
+        recipientGroups.clear();
+        recipientGroups.addAll(groups);
+        DefaultComboBoxModel<String> model = new DefaultComboBoxModel<>();
+        model.addElement("— Chọn nhóm đã lưu —");
+        for (RecipientGroup group : groups) {
+            model.addElement(group.name);
+        }
+        recipientGroupSelector.setModel(model);
+    }
+
+    private void replaceGroupList(DefaultListModel<RecipientGroup> model, List<RecipientGroup> groups) {
+        model.clear();
+        for (RecipientGroup group : groups) {
+            model.addElement(group);
+        }
+    }
+
+    private void selectGroupByName(JList<RecipientGroup> groupList, String name) {
+        for (int index = 0; index < groupList.getModel().getSize(); index++) {
+            if (groupList.getModel().getElementAt(index).name.equalsIgnoreCase(name.trim())) {
+                groupList.setSelectedIndex(index);
+                groupList.ensureIndexIsVisible(index);
+                return;
+            }
+        }
+    }
+
+    private void saveRecipientGroup(String name, String recipientsText, Consumer<List<String>> onResponse) {
+        String normalizedName = name.trim();
+        List<String> recipients = parseRecipientInput(recipientsText);
+        if (normalizedName.isEmpty() || normalizedName.length() > 40) {
+            showError("Tên nhóm phải dài từ 1 đến 40 ký tự.");
+            return;
+        }
+        if (recipients.isEmpty() || recipients.size() > 50) {
+            showError("Nhóm cần có từ 1 đến 50 người nhận.");
+            return;
+        }
+        for (String recipient : recipients) {
+            if (!recipient.matches("[A-Za-z0-9._-]{1,32}") || ".".equals(recipient) || "..".equals(recipient)) {
+                showError("Username không hợp lệ: " + recipient);
+                return;
+            }
+        }
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put("token", sessionToken);
+        parameters.put("name64", encodeGroupValue(normalizedName));
+        parameters.put("recipients64", encodeGroupValue(String.join(",", recipients)));
+        request("SAVE_GROUP", parameters, onResponse);
+    }
+
+    private void deleteRecipientGroup(String name, Consumer<List<String>> onResponse) {
+        request("DELETE_GROUP", Map.of(
+                "token", sessionToken,
+                "name64", encodeGroupValue(name.trim())), onResponse);
+    }
+
+    private List<String> parseRecipientInput(String text) {
+        return Arrays.stream(text.split("[,;\\s]+"))
+                .map(String::trim)
+                .filter(recipient -> !recipient.isEmpty())
+                .distinct()
+                .toList();
+    }
+
+    private String encodeGroupValue(String value) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String decodeGroupValue(String value) {
+        return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+    }
+
+    private void showGroupOperationError(String status) {
+        if ("AUTH_REQUIRED".equals(status)) {
+            expireSession();
+        } else if (status.startsWith("RECIPIENT_NOT_FOUND:")) {
+            showError("Không tìm thấy tài khoản LAN: " + status.substring("RECIPIENT_NOT_FOUND:".length()));
+        } else if ("INVALID_RECIPIENTS".equals(status)) {
+            showError("Danh sách người nhận không hợp lệ hoặc vượt quá 50 người.");
+        } else if ("GROUP_LIMIT".equals(status)) {
+            showError("Mỗi tài khoản có thể lưu tối đa 50 nhóm.");
+        } else if ("GROUP_NOT_FOUND".equals(status)) {
+            showError("Không tìm thấy nhóm cần xóa.");
+        } else {
+            showError("Máy chủ phản hồi: " + status);
+        }
+    }
+
     private void sendEmail() {
         if (currentUsername == null) {
             showPage("compose");
             return;
         }
 
-        String recipient = recipientField.getText().trim();
+        List<String> recipients = parseRecipientInput(recipientField.getText());
         String subject = subjectField.getText().trim();
         String body = bodyField.getText();
 
-        if (recipient.isEmpty() || subject.isEmpty() || body.trim().isEmpty()) {
-            showError("Hãy điền người nhận, tiêu đề và nội dung thư.");
+        if (recipients.isEmpty() || subject.isEmpty() || body.trim().isEmpty()) {
+            showError("Hãy điền ít nhất một người nhận, tiêu đề và nội dung thư.");
             return;
         }
-
+        if (recipients.size() > 50) {
+            showError("Có thể gửi tối đa 50 người nhận trong một lần.");
+            return;
+        }
+        for (String recipient : recipients) {
+            if (!recipient.matches("[A-Za-z0-9._-]{1,32}") || ".".equals(recipient) || "..".equals(recipient)) {
+                showError("Username không hợp lệ: " + recipient);
+                return;
+            }
+        }
         Map<String, String> parameters = new HashMap<>();
         parameters.put("token", sessionToken);
-        parameters.put("to", recipient);
         parameters.put("subject", subject);
         parameters.put(
                 "body64",
                 Base64.getEncoder().encodeToString(body.getBytes(StandardCharsets.UTF_8))
         );
 
-        request("SEND_EMAIL", parameters, response -> {
+        String command;
+        if (recipients.size() == 1) {
+            command = "SEND_EMAIL";
+            parameters.put("to", recipients.get(0));
+        } else {
+            command = "SEND_GROUP_EMAIL";
+            parameters.put("recipients", String.join(",", recipients));
+        }
+
+        request(command, parameters, response -> {
             if ("EMAIL_SENT".equals(response.get(0))) {
+                String recipientSummary = recipients.size() == 1
+                        ? recipients.get(0)
+                        : recipients.size() + " người trong nhóm";
                 JOptionPane.showMessageDialog(
                         this,
-                        "Đã gửi thư tới " + recipient + ".",
+                        "Đã gửi thư tới " + recipientSummary + ".",
                         "Gửi thư thành công",
                         JOptionPane.INFORMATION_MESSAGE
                 );
@@ -1250,14 +1533,14 @@ public class MailClientGUI extends JFrame {
                 subjectField.setText("");
                 bodyField.setText("");
 
-            } else if ("RECIPIENT_NOT_FOUND".equals(response.get(0))) {
-                showError("Tài khoản người nhận không tồn tại.");
+            } else if (response.get(0).startsWith("RECIPIENT_NOT_FOUND")) {
+                showGroupOperationError(response.get(0));
 
             } else if ("AUTH_REQUIRED".equals(response.get(0))) {
                 expireSession();
 
             } else {
-                showError("Máy chủ phản hồi: " + response.get(0));
+                showGroupOperationError(response.get(0));
             }
         });
     }
@@ -1293,6 +1576,8 @@ public class MailClientGUI extends JFrame {
         setMulticastStatus("Multicast: chưa đăng nhập", "Chưa đăng nhập", MUTED);
         currentUsername = null;
         sessionToken = null;
+        setRecipientGroups(List.of());
+        recipientField.setText("");
 
         accountStatus.setText("Chưa đăng nhập");
         accountStatus.setForeground(MUTED);
@@ -1377,5 +1662,20 @@ public class MailClientGUI extends JFrame {
     private void setConnectionStatus(String message, Color color) {
         connectionStatus.setText("●  " + message);
         connectionStatus.setForeground(color);
+    }
+
+    private static final class RecipientGroup {
+        private final String name;
+        private final String recipients;
+
+        private RecipientGroup(String name, String recipients) {
+            this.name = name;
+            this.recipients = recipients;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
     }
 }

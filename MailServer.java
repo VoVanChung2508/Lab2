@@ -28,7 +28,9 @@ import java.nio.file.Files;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +48,9 @@ public class MailServer {
     private static final int DEFAULT_DASHBOARD_PORT = 8080;
     private static final Path MAIL_ROOT = Paths.get("mail_data");
     private static final String CREDENTIAL_FILE = ".credentials";
+    private static final String GROUPS_FILE = ".groups";
+    private static final int MAX_GROUPS_PER_USER = 20;
+    private static final int MAX_RECIPIENTS_PER_GROUP = 50;
     private static final String WELCOME_TEXT = "Thank you for using this service.\n"
             + "We hope that you will feel comfortable using our mail service.";
     private static final int PASSWORD_ITERATIONS = 210_000;
@@ -461,6 +466,18 @@ public class MailServer {
                     case "SEND_EMAIL":
                         handleSendEmail(parameters, output);
                         break;
+                    case "SEND_GROUP_EMAIL":
+                        handleSendGroupEmail(parameters, output);
+                        break;
+                    case "LIST_GROUPS":
+                        handleListGroups(parameters, output);
+                        break;
+                    case "SAVE_GROUP":
+                        handleSaveGroup(parameters, output);
+                        break;
+                    case "DELETE_GROUP":
+                        handleDeleteGroup(parameters, output);
+                        break;
                     case "READ_EMAIL":
                         handleReadEmail(parameters, output);
                         break;
@@ -569,17 +586,7 @@ public class MailServer {
         String from = authenticatedUsername(parameters.get("token"));
         String to = parameters.get("to");
         String subject = parameters.get("subject");
-        String body = parameters.get("body");
-
-        String encodedBody = parameters.get("body64");
-        if (encodedBody != null) {
-            try {
-                body = new String(Base64.getDecoder().decode(encodedBody), StandardCharsets.UTF_8);
-            } catch (IllegalArgumentException e) {
-                sendResponse(output, "INVALID_EMAIL");
-                return;
-            }
-        }
+        String body = readEmailBody(parameters);
 
         if (from == null) {
             sendResponse(output, "AUTH_REQUIRED");
@@ -590,29 +597,251 @@ public class MailServer {
             return;
         }
 
-        if (!isValidUsername(to)) {
-            sendResponse(output, "RECIPIENT_NOT_FOUND");
+        sendToRecipients(from, List.of(to), subject, body, output);
+    }
+
+    private static void handleSendGroupEmail(Map<String, String> parameters, BufferedWriter output)
+            throws IOException {
+        String from = authenticatedUsername(parameters.get("token"));
+        String recipientsValue = parameters.get("recipients");
+        String subject = parameters.get("subject");
+        String body = readEmailBody(parameters);
+        if (from == null) {
+            sendResponse(output, "AUTH_REQUIRED");
             return;
         }
-
-        Path recipientDirectory = MAIL_ROOT.resolve(to.trim());
-        if (!Files.exists(recipientDirectory) || !Files.isDirectory(recipientDirectory)) {
-            sendResponse(output, "RECIPIENT_NOT_FOUND");
+        if (recipientsValue == null || subject == null || body == null) {
+            sendResponse(output, "INVALID_EMAIL");
             return;
         }
+        List<String> recipients = parseRecipients(recipientsValue);
+        if (recipients.isEmpty() || recipients.size() > MAX_RECIPIENTS_PER_GROUP) {
+            sendResponse(output, "INVALID_RECIPIENTS");
+            return;
+        }
+        sendToRecipients(from, recipients, subject, body, output);
+    }
 
-        String fileName = generateEmailFileName(recipientDirectory);
+    private static String readEmailBody(Map<String, String> parameters) {
+        String encodedBody = parameters.get("body64");
+        if (encodedBody == null) {
+            return parameters.get("body");
+        }
+        try {
+            return new String(Base64.getDecoder().decode(encodedBody), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static void sendToRecipients(String from, List<String> recipients, String subject, String body,
+            BufferedWriter output) throws IOException {
+        Map<String, String> uniqueRecipients = new LinkedHashMap<>();
+        for (String recipient : recipients) {
+            String normalizedRecipient = recipient.trim();
+            if (!isValidUsername(normalizedRecipient)) {
+                sendResponse(output, "INVALID_RECIPIENTS");
+                return;
+            }
+            Path userDirectory = MAIL_ROOT.resolve(normalizedRecipient);
+            if (!Files.isDirectory(userDirectory)) {
+                sendResponse(output, "RECIPIENT_NOT_FOUND:" + normalizedRecipient);
+                return;
+            }
+            uniqueRecipients.putIfAbsent(normalizedRecipient.toLowerCase(Locale.ROOT), normalizedRecipient);
+        }
+
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        String emailContent = "From: " + from.trim() + "\n"
-                + "To: " + to.trim() + "\n"
-                + "Subject: " + subject.trim() + "\n"
-                + "Date: " + timestamp + "\n\n"
-                + body + "\n";
+        List<Path> savedFiles = new ArrayList<>();
+        try {
+            synchronized (ACCOUNT_LOCK) {
+                for (String recipient : uniqueRecipients.values()) {
+                    Path recipientDirectory = MAIL_ROOT.resolve(recipient);
+                    String fileName = generateEmailFileName(recipientDirectory);
+                    String emailContent = "From: " + from.trim() + "\n"
+                            + "To: " + recipient + "\n"
+                            + "Subject: " + subject.trim() + "\n"
+                            + "Date: " + timestamp + "\n\n"
+                            + body + "\n";
+                    Path mailFile = recipientDirectory.resolve(fileName);
+                    Files.write(mailFile, emailContent.getBytes(StandardCharsets.UTF_8));
+                    savedFiles.add(mailFile);
+                }
+            }
+        } catch (IOException writeError) {
+            for (Path savedFile : savedFiles) {
+                try {
+                    Files.deleteIfExists(savedFile);
+                } catch (IOException cleanupError) {
+                    writeError.addSuppressed(cleanupError);
+                }
+            }
+            throw writeError;
+        }
 
-        Files.write(recipientDirectory.resolve(fileName), emailContent.getBytes(StandardCharsets.UTF_8));
-        sendResponse(output, "EMAIL_SENT");
-        log("Email sent from " + from + " to " + to + " -> " + fileName);
-        sendNewMailNotification(to.trim());
+        sendResponse(output, List.of("EMAIL_SENT", "DELIVERED:" + uniqueRecipients.size()));
+        log("Email sent from " + from + " to " + String.join(", ", uniqueRecipients.values()));
+        for (String recipient : uniqueRecipients.values()) {
+            sendNewMailNotification(recipient);
+        }
+    }
+
+    private static List<String> parseRecipients(String recipientsValue) {
+        Map<String, String> recipients = new LinkedHashMap<>();
+        for (String item : recipientsValue.split("[,;\\s]+")) {
+            String recipient = item.trim();
+            if (!recipient.isEmpty()) {
+                recipients.putIfAbsent(recipient.toLowerCase(Locale.ROOT), recipient);
+            }
+        }
+        return new ArrayList<>(recipients.values());
+    }
+
+    private static void handleListGroups(Map<String, String> parameters, BufferedWriter output)
+            throws IOException {
+        String username = authenticatedUsername(parameters.get("token"));
+        if (username == null) {
+            sendResponse(output, "AUTH_REQUIRED");
+            return;
+        }
+        List<String> response = new ArrayList<>();
+        response.add("GROUPS");
+        for (String[] group : readGroups(username)) {
+            response.add("GROUP:" + encodeGroupValue(group[0]) + ":" + encodeGroupValue(group[1]));
+        }
+        sendResponse(output, response);
+    }
+
+    private static void handleSaveGroup(Map<String, String> parameters, BufferedWriter output)
+            throws IOException {
+        String username = authenticatedUsername(parameters.get("token"));
+        if (username == null) {
+            sendResponse(output, "AUTH_REQUIRED");
+            return;
+        }
+        String name = decodeGroupValue(parameters.get("name64"));
+        String recipientsValue = decodeGroupValue(parameters.get("recipients64"));
+        if (name == null || recipientsValue == null || !isValidGroupName(name)) {
+            sendResponse(output, "INVALID_GROUP");
+            return;
+        }
+        List<String> recipients = parseRecipients(recipientsValue);
+        if (recipients.isEmpty() || recipients.size() > MAX_RECIPIENTS_PER_GROUP) {
+            sendResponse(output, "INVALID_RECIPIENTS");
+            return;
+        }
+        for (String recipient : recipients) {
+            if (!isValidUsername(recipient) || !Files.isDirectory(MAIL_ROOT.resolve(recipient))) {
+                sendResponse(output, "RECIPIENT_NOT_FOUND:" + recipient);
+                return;
+            }
+        }
+
+        synchronized (ACCOUNT_LOCK) {
+            List<String[]> groups = readGroups(username);
+            boolean replaced = false;
+            for (String[] group : groups) {
+                if (group[0].equalsIgnoreCase(name.trim())) {
+                    group[1] = String.join(",", recipients);
+                    group[0] = name.trim();
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                if (groups.size() >= MAX_GROUPS_PER_USER) {
+                    sendResponse(output, "GROUP_LIMIT");
+                    return;
+                }
+                groups.add(new String[] { name.trim(), String.join(",", recipients) });
+            }
+            writeGroups(username, groups);
+        }
+        sendResponse(output, "GROUP_SAVED");
+        log("Saved recipient group for " + username + ": " + name.trim());
+    }
+
+    private static void handleDeleteGroup(Map<String, String> parameters, BufferedWriter output)
+            throws IOException {
+        String username = authenticatedUsername(parameters.get("token"));
+        if (username == null) {
+            sendResponse(output, "AUTH_REQUIRED");
+            return;
+        }
+        String name = decodeGroupValue(parameters.get("name64"));
+        if (name == null || !isValidGroupName(name)) {
+            sendResponse(output, "INVALID_GROUP");
+            return;
+        }
+        synchronized (ACCOUNT_LOCK) {
+            List<String[]> groups = readGroups(username);
+            boolean removed = groups.removeIf(group -> group[0].equalsIgnoreCase(name.trim()));
+            if (!removed) {
+                sendResponse(output, "GROUP_NOT_FOUND");
+                return;
+            }
+            writeGroups(username, groups);
+        }
+        sendResponse(output, "GROUP_DELETED");
+        log("Deleted recipient group for " + username + ": " + name.trim());
+    }
+
+    private static List<String[]> readGroups(String username) throws IOException {
+        synchronized (ACCOUNT_LOCK) {
+            Path groupFile = MAIL_ROOT.resolve(username).resolve(GROUPS_FILE);
+            List<String[]> groups = new ArrayList<>();
+            if (!Files.exists(groupFile)) {
+                return groups;
+            }
+            for (String line : Files.readAllLines(groupFile, StandardCharsets.UTF_8)) {
+                String[] parts = line.split(":", 2);
+                if (parts.length != 2) {
+                    throw new IOException("Recipient group file contains an invalid entry.");
+                }
+                String name = decodeGroupValue(parts[0]);
+                String recipients = decodeGroupValue(parts[1]);
+                if (name == null || recipients == null) {
+                    throw new IOException("Recipient group file contains invalid encoded data.");
+                }
+                groups.add(new String[] { name, recipients });
+            }
+            return groups;
+        }
+    }
+
+    private static void writeGroups(String username, List<String[]> groups) throws IOException {
+        synchronized (ACCOUNT_LOCK) {
+            StringBuilder contents = new StringBuilder();
+            for (String[] group : groups) {
+                contents.append(encodeGroupValue(group[0]))
+                        .append(':')
+                        .append(encodeGroupValue(group[1]))
+                        .append('\n');
+            }
+            Files.writeString(MAIL_ROOT.resolve(username).resolve(GROUPS_FILE),
+                    contents.toString(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static boolean isValidGroupName(String name) {
+        String normalized = name.trim();
+        return !normalized.isEmpty() && normalized.length() <= 40
+                && normalized.chars().noneMatch(Character::isISOControl);
+    }
+
+    private static String encodeGroupValue(String value) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decodeGroupValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static void sendNewMailNotification(String recipient) {
@@ -740,6 +969,7 @@ public class MailServer {
             return stream
                     .filter(Files::isRegularFile)
                     .filter(path -> !CREDENTIAL_FILE.equals(path.getFileName().toString()))
+                    .filter(path -> !GROUPS_FILE.equals(path.getFileName().toString()))
                     .map(path -> path.getFileName().toString())
                     .sorted(Comparator.naturalOrder())
                     .collect(Collectors.toList());
