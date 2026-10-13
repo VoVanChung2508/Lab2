@@ -9,6 +9,8 @@ import java.io.StringWriter;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.InetAddress;
+import java.net.MulticastSocket;
 import java.net.SocketException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +30,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
@@ -49,6 +52,7 @@ public class MailServer {
     private static final int PASSWORD_SALT_BYTES = 16;
     private static final int PASSWORD_HASH_BYTES = 32;
     private static final int SESSION_TOKEN_BYTES = 32;
+    private static final String SERVER_DISCOVERY_ID = UUID.randomUUID().toString();
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final Object ACCOUNT_LOCK = new Object();
     private static final Map<String, String> ACTIVE_SESSIONS = new ConcurrentHashMap<>();
@@ -436,6 +440,9 @@ public class MailServer {
                 }
 
                 switch (command.trim().toUpperCase()) {
+                    case "DISCOVER":
+                        sendResponse(output, "MAIL_SERVER:" + SERVER_DISCOVERY_ID);
+                        break;
                     case "PING":
                         sendResponse(output, "PONG");
                         break;
@@ -605,6 +612,22 @@ public class MailServer {
         Files.write(recipientDirectory.resolve(fileName), emailContent.getBytes(StandardCharsets.UTF_8));
         sendResponse(output, "EMAIL_SENT");
         log("Email sent from " + from + " to " + to + " -> " + fileName);
+        sendNewMailNotification(to.trim());
+    }
+
+    private static void sendNewMailNotification(String recipient) {
+        byte[] notification = ("NEW_MAIL:" + recipient).getBytes(StandardCharsets.UTF_8);
+        InetAddress group;
+        try {
+            group = InetAddress.getByName(MailClient.NOTIFICATION_GROUP);
+            try (MulticastSocket multicastSocket = new MulticastSocket()) {
+                multicastSocket.setTimeToLive(1);
+                multicastSocket.send(new DatagramPacket(notification, notification.length,
+                        group, MailClient.NOTIFICATION_PORT));
+            }
+        } catch (IOException e) {
+            log("Could not multicast new-mail notification for " + recipient + ": " + e.getMessage());
+        }
     }
 
     private static void handleReadEmail(Map<String, String> parameters, BufferedWriter output) throws IOException {

@@ -6,7 +6,8 @@
 
 - JDK được cài trên máy chủ và các máy khách.
 - Các máy nằm trong cùng mạng LAN và có thể kết nối với nhau.
-- Cho phép gói UDP đến cổng `3456` trên máy chủ.
+- Cho phép gói UDP đến cổng `3456` trên máy chủ để nhận yêu cầu mail và broadcast tìm máy chủ.
+- Cho phép multicast UDP đến cổng `3457` trên các máy khách để nhận thông báo thư mới.
 
 ## Biên dịch
 
@@ -38,6 +39,8 @@ Có thể truyền cổng mail khác khi khởi động bằng `java MailServer 
 
 Dashboard cho phép xem trạng thái, khởi động/dừng/khởi động lại dịch vụ mail, đổi cổng UDP và xem nhật ký hoạt động gần đây. Dừng dịch vụ mail không tắt dashboard, nên có thể khởi động lại từ trình duyệt. Đổi cổng sẽ khởi động lại dịch vụ nếu dịch vụ đang chạy; sau đó cập nhật cổng tương ứng trên MailClient và quy tắc tường lửa nếu có. Cổng được đổi chỉ có hiệu lực trong lần chạy MailServer hiện tại; khởi động chương trình lần sau sẽ dùng lại mặc định `3456`. Nhật ký hiển thị trong dashboard cũng chỉ lưu trong bộ nhớ của lần chạy hiện tại.
 
+MailServer trả lời yêu cầu broadcast tìm máy chủ trên cổng mail hiện tại. Khi thư nội bộ được lưu thành công, server gửi một thông báo multicast tới nhóm `239.255.42.99:3457`. Cổng thông báo multicast này cố định, không đổi theo cổng mail trong dashboard.
+
 Dữ liệu tài khoản và thư vẫn nằm trong `mail_data` tính từ thư mục chạy lệnh.
 
 ### Tìm địa chỉ IP LAN của máy chủ trên Windows
@@ -52,6 +55,14 @@ Nếu máy khách không kết nối được, cho phép Java hoặc mở cổng
 New-NetFirewallRule -DisplayName "MailServer UDP 3456" -Direction Inbound -Protocol UDP -LocalPort 3456 -Action Allow -Profile Private
 ```
 
+Cho phép thêm UDP `3457` cho multicast trên máy khách nếu thông báo thư mới không đến được. Có thể tạo quy tắc inbound trên từng máy khách bằng PowerShell chạy với quyền quản trị:
+
+```powershell
+New-NetFirewallRule -DisplayName "MailClient UDP Multicast 3457" -Direction Inbound -Protocol UDP -LocalPort 3457 -Action Allow -Profile Private
+```
+
+Broadcast discovery và multicast notification có thể bị chặn bởi firewall, Wi-Fi client isolation, router hoặc VLAN. Broadcast không đi qua router sang subnet khác; trong trường hợp đó, nhập IP và cổng máy chủ thủ công.
+
 ## Chạy máy khách
 
 Trên mỗi máy khách, chạy:
@@ -62,11 +73,12 @@ java MailClient
 
 Trong giao diện:
 
-1. Nhập IP LAN của máy chủ và cổng `3456` ở thanh phía trên.
-2. Chọn **Kiểm tra kết nối** để xác nhận máy khách truy cập được máy chủ.
+1. Chọn **Tìm máy chủ** để dò các MailServer trong cùng mạng LAN; nếu tìm thấy nhiều server, chọn một server trong danh sách. Có thể nhập IP LAN và cổng thủ công nếu discovery không hoạt động.
+2. Chọn **Kiểm tra** để xác nhận máy khách nhận được phản hồi từ máy chủ.
 3. Ở mục **Tài khoản**, nhập tên tài khoản và mật khẩu. Mật khẩu được hiển thị khi nhập, dài từ 8 đến 128 ký tự.
 4. Chọn **Đăng ký** để tạo tài khoản hoặc **Đăng nhập** để vào hộp thư. Tài khoản đăng nhập sai tên hoặc mật khẩu sẽ nhận cùng một thông báo chung.
-5. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ.
+5. Client đang đăng nhập tham gia nhóm multicast để tự làm mới hộp thư khi có thư mới gửi đến tài khoản đó; khi đăng xuất, client rời nhóm.
+6. Dùng **Hộp thư** để xem thư và **Soạn thư** để gửi thư cho tài khoản đã tạo trên máy chủ.
 
 Máy khách trong cùng LAN dùng chung dữ liệu trên một MailServer. Nếu đổi cổng máy chủ, cần sửa cổng đang dùng trên giao diện máy khách cho khớp.
 
@@ -74,4 +86,4 @@ Tài khoản cũ được tạo trước khi thêm mật khẩu vẫn giữ nguy
 
 ## Giới hạn bảo mật
 
-Mật khẩu được lưu trên máy chủ dưới dạng PBKDF2-HMAC-SHA256 với salt ngẫu nhiên; mật khẩu rõ không được ghi vào tệp tài khoản. Giao thức UDP không đảm bảo gói tin đến nơi hoặc đúng thứ tự và không mã hóa mật khẩu, token phiên hay nội dung thư khi truyền qua mạng; mỗi yêu cầu phải vừa trong một gói UDP. Đây là ứng dụng học tập: chỉ sử dụng trên mạng LAN riêng đáng tin cậy; không đưa máy chủ lên Internet hoặc dùng để trao đổi thông tin nhạy cảm.
+Mật khẩu được lưu trên máy chủ dưới dạng PBKDF2-HMAC-SHA256 với salt ngẫu nhiên; mật khẩu rõ không được ghi vào tệp tài khoản. Giao thức UDP không đảm bảo gói tin đến nơi hoặc đúng thứ tự và không mã hóa mật khẩu, token phiên hay nội dung thư khi truyền qua mạng; mỗi yêu cầu phải vừa trong một gói UDP. Thông báo multicast chỉ chứa tên tài khoản người nhận (không chứa tiêu đề hoặc nội dung thư), nhưng thiết bị tham gia cùng nhóm multicast có thể đọc được tên đó; các gói discovery/notification cũng không được xác thực và có thể bị giả mạo. Đây là ứng dụng học tập: chỉ sử dụng trên mạng LAN riêng đáng tin cậy; không đưa máy chủ lên Internet hoặc dùng để trao đổi thông tin nhạy cảm.

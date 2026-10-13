@@ -12,7 +12,14 @@ import java.awt.Insets;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.InetSocketAddress;
+import java.net.MulticastSocket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
@@ -36,6 +43,7 @@ import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
+import javax.swing.SwingUtilities;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
@@ -92,8 +100,9 @@ public class MailClientGUI extends JFrame {
     private final JLabel signedInLabel = new JLabel("●  Chưa đăng nhập");
     private final JButton logoutButton = new JButton("Đăng xuất");
 
-    private String currentUsername;
-    private String sessionToken;
+    private volatile String currentUsername;
+    private volatile String sessionToken;
+    private volatile MulticastSocket notificationSocket;
 
     public MailClientGUI() {
         super("Mail Client • LAN");
@@ -105,6 +114,12 @@ public class MailClientGUI extends JFrame {
         setMinimumSize(new Dimension(980, 640));
         setSize(1120, 740);
         setLocationRelativeTo(null);
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                stopNotificationListener();
+            }
+        });
 
         buildInterface();
     }
@@ -182,9 +197,15 @@ public class MailClientGUI extends JFrame {
         serverBlock.add(serverInputs, BorderLayout.CENTER);
         right.add(serverBlock, BorderLayout.CENTER);
 
+        JPanel serverActions = new JPanel(new GridLayout(1, 2, 8, 0));
+        serverActions.setOpaque(false);
+        JButton discoverButton = secondaryHeaderButton("Tìm máy chủ");
+        discoverButton.addActionListener(event -> discoverServer());
         JButton checkButton = secondaryHeaderButton("Kiểm tra");
         checkButton.addActionListener(event -> checkConnection());
-        right.add(checkButton, BorderLayout.EAST);
+        serverActions.add(discoverButton);
+        serverActions.add(checkButton);
+        right.add(serverActions, BorderLayout.EAST);
 
         connectionStatus.setForeground(new Color(214, 225, 241));
         connectionStatus.setHorizontalAlignment(SwingConstants.RIGHT);
@@ -780,6 +801,134 @@ public class MailClientGUI extends JFrame {
         }.execute();
     }
 
+    private void discoverServer() {
+        final int port;
+        try {
+            port = readPort();
+        } catch (IllegalArgumentException exception) {
+            showError(exception.getMessage());
+            return;
+        }
+
+        setConnectionStatus("Đang tìm máy chủ trong LAN...", WARNING);
+        new SwingWorker<List<InetSocketAddress>, Void>() {
+            @Override
+            protected List<InetSocketAddress> doInBackground() throws IOException {
+                return MailClient.discoverServers(port);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    List<InetSocketAddress> servers = get();
+                    if (servers.isEmpty()) {
+                        setConnectionStatus("Không tìm thấy máy chủ", new Color(255, 180, 180));
+                        showError("Không tìm thấy MailServer qua broadcast. Hãy kiểm tra cùng mạng LAN, "
+                                + "tường lửa UDP và thử nhập IP máy chủ thủ công.");
+                        return;
+                    }
+
+                    String[] choices = servers.stream()
+                            .map(address -> address.getAddress().getHostAddress() + ":" + address.getPort())
+                            .toArray(String[]::new);
+                    Object selected = choices.length == 1
+                            ? choices[0]
+                            : JOptionPane.showInputDialog(
+                                    MailClientGUI.this,
+                                    "Chọn máy chủ MailServer:",
+                                    "Máy chủ được tìm thấy",
+                                    JOptionPane.QUESTION_MESSAGE,
+                                    null,
+                                    choices,
+                                    choices[0]);
+                    if (selected == null) {
+                        return;
+                    }
+
+                    int selectedIndex = Arrays.asList(choices).indexOf(selected.toString());
+                    if (selectedIndex < 0) {
+                        showError("Lựa chọn máy chủ không hợp lệ.");
+                        return;
+                    }
+                    InetSocketAddress address = servers.get(selectedIndex);
+                    hostField.setText(address.getAddress().getHostAddress());
+                    portField.setText(Integer.toString(address.getPort()));
+                    setConnectionStatus("Đã tìm thấy " + choices[selectedIndex], SUCCESS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    setConnectionStatus("Tìm kiếm bị gián đoạn", new Color(255, 180, 180));
+                    showError("Tìm máy chủ bị gián đoạn.");
+                } catch (ExecutionException exception) {
+                    setConnectionStatus("Không tìm được máy chủ", new Color(255, 180, 180));
+                    showError("Không thể tìm máy chủ: " + rootMessage(exception));
+                }
+            }
+        }.execute();
+    }
+
+    private void startNotificationListener(String username) {
+        stopNotificationListener();
+        try {
+            MulticastSocket socket = MailClient.openNotificationSocket();
+            notificationSocket = socket;
+            Thread listener = new Thread(
+                    () -> listenForMailNotifications(socket, username),
+                    "mail-client-multicast");
+            listener.setDaemon(true);
+            listener.start();
+        } catch (IOException exception) {
+            showError("Đã đăng nhập nhưng không thể nghe thông báo multicast: " + exception.getMessage());
+        }
+    }
+
+    private void listenForMailNotifications(MulticastSocket socket, String username) {
+        byte[] buffer = new byte[512];
+        while (!socket.isClosed()) {
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                socket.receive(packet);
+                String notification = new String(
+                        packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8);
+                if (notification.equals("NEW_MAIL:" + username)
+                        && username.equals(currentUsername)) {
+                    SwingUtilities.invokeLater(() -> {
+                        if (username.equals(currentUsername)) {
+                            refreshInbox();
+                        }
+                    });
+                }
+            } catch (SocketTimeoutException exception) {
+                continue;
+            } catch (SocketException exception) {
+                if (!socket.isClosed()) {
+                    reportNotificationFailure(exception);
+                }
+                break;
+            } catch (IOException exception) {
+                reportNotificationFailure(exception);
+                break;
+            }
+        }
+        if (notificationSocket == socket) {
+            notificationSocket = null;
+        }
+    }
+
+    private void reportNotificationFailure(IOException exception) {
+        SwingUtilities.invokeLater(() -> {
+            setConnectionStatus("Thông báo multicast bị gián đoạn", new Color(255, 180, 180));
+            showError("Không thể nhận thông báo multicast: " + exception.getMessage());
+        });
+    }
+
+    private void stopNotificationListener() {
+        MulticastSocket socket = notificationSocket;
+        notificationSocket = null;
+        if (socket != null) {
+            socket.close();
+        }
+    }
+
     private int readPort() {
         try {
             int port = Integer.parseInt(portField.getText().trim());
@@ -882,6 +1031,7 @@ public class MailClientGUI extends JFrame {
                 signedInLabel.setText("●  " + currentUsername);
                 signedInLabel.setForeground(SUCCESS);
                 logoutButton.setVisible(true);
+                startNotificationListener(currentUsername);
 
                 passwordField.setText("");
                 confirmPasswordField.setText("");
@@ -1044,6 +1194,7 @@ public class MailClientGUI extends JFrame {
     }
 
     private void expireSession() {
+        stopNotificationListener();
         currentUsername = null;
         sessionToken = null;
 
